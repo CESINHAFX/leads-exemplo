@@ -45,7 +45,7 @@
     "eslint": "^9.33.0",
     "eslint-plugin-react": "^7.37.5",
     "jest": "^30.0.5",
-    "n8n": "^1.17.0",
+    "n8n": "^2.13.3",
     "supertest": "^7.1.4",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
