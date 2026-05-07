@@ -11,6 +11,7 @@ export interface LeadPayload {
   name: string;
   email?: string;
   phone?: string;
+  image_url?: string;
   preferred_channel?: string;
   timezone?: string;
   lead_type: 'hot' | 'warm' | 'cold';
@@ -28,6 +29,29 @@ export interface LeadPayload {
 
 export interface LeadRecord extends LeadPayload {
   id: string;
+  image_url?: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export type SocialSignalStatus = 'pending' | 'approved' | 'rejected';
+
+export interface SocialSignalPayload {
+  network: 'instagram' | 'twitter';
+  external_id: string;
+  author_handle: string;
+  content: string;
+  post_url: string;
+  intent_score: number;
+  keywords_matched: string[];
+  captured_at: Date;
+  status?: SocialSignalStatus;
+  lead_id?: string | null;
+}
+
+export interface SocialSignalRecord extends SocialSignalPayload {
+  id: string;
+  notified_at?: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -105,6 +129,7 @@ export class DatabaseManager {
       name,
       email,
       phone,
+      image_url,
       preferred_channel,
       timezone,
       lead_type,
@@ -127,6 +152,7 @@ export class DatabaseManager {
         name,
         email,
         phone,
+        image_url,
         preferred_channel,
         timezone,
         lead_type,
@@ -142,7 +168,7 @@ export class DatabaseManager {
         assigned_agent
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17
+        $11, $12, $13, $14, $15, $16, $17, $18
       )
       RETURNING *;
     `,
@@ -151,6 +177,7 @@ export class DatabaseManager {
         name,
         email,
         phone,
+        image_url,
         preferred_channel,
         timezone,
         lead_type,
@@ -170,6 +197,170 @@ export class DatabaseManager {
     return result.rows[0] as LeadRecord;
   }
 
+  /**
+   * Returns recent leads for dashboard usage.
+   */
+  async getLeads(limit = 100): Promise<LeadRecord[]> {
+    const safeLimit = Math.max(1, Math.min(limit, 500));
+    const result = await this.query(
+      `
+      SELECT *
+      FROM leads
+      ORDER BY created_at DESC
+      LIMIT $1;
+      `,
+      [safeLimit]
+    );
+
+    return result.rows as LeadRecord[];
+  }
+
+  async createOrGetSocialSignal(
+    payload: SocialSignalPayload
+  ): Promise<{ created: boolean; signal: SocialSignalRecord }> {
+    const result = await this.query(
+      `
+      INSERT INTO social_signals (
+        network,
+        external_id,
+        author_handle,
+        content,
+        post_url,
+        intent_score,
+        keywords_matched,
+        captured_at,
+        status,
+        lead_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT (network, external_id) DO NOTHING
+      RETURNING *;
+      `,
+      [
+        payload.network,
+        payload.external_id,
+        payload.author_handle,
+        payload.content,
+        payload.post_url,
+        payload.intent_score,
+        payload.keywords_matched,
+        payload.captured_at,
+        payload.status || 'pending',
+        payload.lead_id || null,
+      ]
+    );
+
+    if (result.rows.length > 0) {
+      return { created: true, signal: result.rows[0] as SocialSignalRecord };
+    }
+
+    const existing = await this.query(
+      `
+      SELECT *
+      FROM social_signals
+      WHERE network = $1 AND external_id = $2
+      LIMIT 1;
+      `,
+      [payload.network, payload.external_id]
+    );
+
+    return { created: false, signal: existing.rows[0] as SocialSignalRecord };
+  }
+
+  async attachLeadToSocialSignal(
+    signalId: string,
+    leadId: string
+  ): Promise<SocialSignalRecord | null> {
+    const result = await this.query(
+      `
+      UPDATE social_signals
+      SET lead_id = $2
+      WHERE id = $1
+      RETURNING *;
+      `,
+      [signalId, leadId]
+    );
+
+    return result.rows[0] ? (result.rows[0] as SocialSignalRecord) : null;
+  }
+
+  async listSocialSignals(
+    limit = 100,
+    status?: SocialSignalStatus
+  ): Promise<SocialSignalRecord[]> {
+    const safeLimit = Math.max(1, Math.min(limit, 500));
+
+    if (status) {
+      const result = await this.query(
+        `
+        SELECT *
+        FROM social_signals
+        WHERE status = $1
+        ORDER BY captured_at DESC
+        LIMIT $2;
+        `,
+        [status, safeLimit]
+      );
+      return result.rows as SocialSignalRecord[];
+    }
+
+    const result = await this.query(
+      `
+      SELECT *
+      FROM social_signals
+      ORDER BY captured_at DESC
+      LIMIT $1;
+      `,
+      [safeLimit]
+    );
+
+    return result.rows as SocialSignalRecord[];
+  }
+
+  async updateSocialSignalStatus(
+    signalId: string,
+    status: SocialSignalStatus
+  ): Promise<SocialSignalRecord | null> {
+    const result = await this.query(
+      `
+      UPDATE social_signals
+      SET status = $2
+      WHERE id = $1
+      RETURNING *;
+      `,
+      [signalId, status]
+    );
+
+    return result.rows[0] ? (result.rows[0] as SocialSignalRecord) : null;
+  }
+
+  async getApprovedUnnotifiedSignals(limit = 100): Promise<SocialSignalRecord[]> {
+    const safeLimit = Math.max(1, Math.min(limit, 500));
+    const result = await this.query(
+      `
+      SELECT *
+      FROM social_signals
+      WHERE status = 'approved'
+        AND notified_at IS NULL
+      ORDER BY captured_at ASC
+      LIMIT $1;
+      `,
+      [safeLimit]
+    );
+
+    return result.rows as SocialSignalRecord[];
+  }
+
+  async markSocialSignalNotified(signalId: string): Promise<void> {
+    await this.query(
+      `
+      UPDATE social_signals
+      SET notified_at = CURRENT_TIMESTAMP
+      WHERE id = $1;
+      `,
+      [signalId]
+    );
+  }
+
   private async runMigrations(): Promise<void> {
     try {
       logger.info('Running database migrations...');
@@ -181,6 +372,47 @@ export class DatabaseManager {
           executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
       `);
+
+      await this.query(`
+        ALTER TABLE leads
+        ADD COLUMN IF NOT EXISTS image_url TEXT;
+      `).catch(() => {
+        // Ignore if leads table does not exist yet; initial migration will create it.
+      });
+
+      await this.query(`
+        CREATE TABLE IF NOT EXISTS social_signals (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          network VARCHAR(20) NOT NULL CHECK (network IN ('instagram', 'twitter')),
+          external_id VARCHAR(255) NOT NULL,
+          author_handle VARCHAR(255) NOT NULL,
+          content TEXT NOT NULL,
+          post_url TEXT NOT NULL,
+          intent_score DECIMAL(5,4) NOT NULL,
+          keywords_matched TEXT[] DEFAULT '{}',
+          captured_at TIMESTAMP NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+          lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+          notified_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(network, external_id)
+        );
+      `);
+
+      await this.query('CREATE INDEX IF NOT EXISTS idx_social_signals_status ON social_signals(status);');
+      await this.query('CREATE INDEX IF NOT EXISTS idx_social_signals_captured_at ON social_signals(captured_at);');
+      await this.query('CREATE INDEX IF NOT EXISTS idx_social_signals_notified_at ON social_signals(notified_at);');
+
+      await this.query(`
+        DROP TRIGGER IF EXISTS update_social_signals_updated_at ON social_signals;
+        CREATE TRIGGER update_social_signals_updated_at
+          BEFORE UPDATE ON social_signals
+          FOR EACH ROW
+          EXECUTE FUNCTION update_updated_at_column();
+      `).catch(() => {
+        // Trigger function may not exist yet during first migration run.
+      });
 
       const migrationName = '001_initial_schema';
       const check = await this.query(
@@ -217,6 +449,7 @@ export class DatabaseManager {
           name VARCHAR(255) NOT NULL,
           email VARCHAR(255),
           phone VARCHAR(50),
+          image_url TEXT,
           preferred_channel VARCHAR(20) DEFAULT 'email',
           timezone VARCHAR(50) DEFAULT 'UTC',
           lead_type VARCHAR(20) NOT NULL CHECK (lead_type IN ('hot', 'warm', 'cold')),
@@ -290,6 +523,27 @@ export class DatabaseManager {
         );
       `);
 
+      // Create social_signals table for social listening approval queue
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS social_signals (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          network VARCHAR(20) NOT NULL CHECK (network IN ('instagram', 'twitter')),
+          external_id VARCHAR(255) NOT NULL,
+          author_handle VARCHAR(255) NOT NULL,
+          content TEXT NOT NULL,
+          post_url TEXT NOT NULL,
+          intent_score DECIMAL(5,4) NOT NULL,
+          keywords_matched TEXT[] DEFAULT '{}',
+          captured_at TIMESTAMP NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+          lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+          notified_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(network, external_id)
+        );
+      `);
+
       // Indexes for performance
       await client.query('CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(source);');
       await client.query('CREATE INDEX IF NOT EXISTS idx_leads_type ON leads(lead_type);');
@@ -303,6 +557,9 @@ export class DatabaseManager {
       await client.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);');
       await client.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);');
       await client.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_agent_id ON audit_logs(agent_id);');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_social_signals_status ON social_signals(status);');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_social_signals_captured_at ON social_signals(captured_at);');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_social_signals_notified_at ON social_signals(notified_at);');
 
       // Trigger to update updated_at on modifications
       await client.query(`
@@ -319,6 +576,14 @@ export class DatabaseManager {
         DROP TRIGGER IF EXISTS update_leads_updated_at ON leads;
         CREATE TRIGGER update_leads_updated_at
           BEFORE UPDATE ON leads
+          FOR EACH ROW
+          EXECUTE FUNCTION update_updated_at_column();
+      `);
+
+      await client.query(`
+        DROP TRIGGER IF EXISTS update_social_signals_updated_at ON social_signals;
+        CREATE TRIGGER update_social_signals_updated_at
+          BEFORE UPDATE ON social_signals
           FOR EACH ROW
           EXECUTE FUNCTION update_updated_at_column();
       `);

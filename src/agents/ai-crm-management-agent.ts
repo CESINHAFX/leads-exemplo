@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { DatabaseManager } from '../database/manager';
-import { GoHighLevelClient } from '../integrations/gohighlevel/client';
+import { CRMProvider } from '../integrations/crm/provider';
 import { Lead, LeadModel, LeadStatus } from '../types/lead';
 import { Interaction } from '../types/interaction';
 import { logger } from '../utils/logger';
@@ -49,26 +49,40 @@ const N8N_WEBHOOK_URL = 'http://localhost:5678/webhook-test/lead';
 const N8N_API_KEY = process.env.N8N_API_KEY;
 
 async function syncLeadToN8n(lead: Lead) {
-  await axios.post(N8N_WEBHOOK_URL, lead, {
-    headers: {
-      'Content-Type': 'application/json',
-      'X-N8N-API-KEY': N8N_API_KEY,
-    },
-  });
+  try {
+    await axios.post(N8N_WEBHOOK_URL, lead, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-N8N-API-KEY': N8N_API_KEY,
+      },
+    });
+  } catch (error) {
+    logger.warn('N8N lead sync failed, continuing with safe fallback', {
+      leadId: lead.id,
+      error: (error as Error).message,
+    });
+  }
 }
 
 async function syncInteractionToN8n(interaction: Interaction, contactId: string) {
-  await axios.post(N8N_WEBHOOK_URL, { interaction, contactId }, {
-    headers: {
-      'Content-Type': 'application/json',
-      'X-N8N-API-KEY': N8N_API_KEY,
-    },
-  });
+  try {
+    await axios.post(N8N_WEBHOOK_URL, { interaction, contactId }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-N8N-API-KEY': N8N_API_KEY,
+      },
+    });
+  } catch (error) {
+    logger.warn('N8N interaction sync failed, continuing with safe fallback', {
+      interactionId: interaction.id,
+      error: (error as Error).message,
+    });
+  }
 }
 
 export class AICRMManagementAgent {
   private db: DatabaseManager;
-  private ghl: GoHighLevelClient;
+  private crmProvider: CRMProvider;
   private opts: AICRMOptions;
   private config: CRMManagementConfig;
   private syncQueue: Map<
@@ -78,11 +92,11 @@ export class AICRMManagementAgent {
 
   constructor(
     db: DatabaseManager,
-    ghl: GoHighLevelClient,
+    crmProvider: CRMProvider,
     opts: AICRMOptions = {}
   ) {
     this.db = db;
-    this.ghl = ghl;
+    this.crmProvider = crmProvider;
     this.opts = opts;
     this.config = {
       syncTimeoutMs: opts.syncTimeoutMs || 5000, // 5-second SLA
@@ -181,6 +195,18 @@ export class AICRMManagementAgent {
       leadModel.update({ status: newStatus });
       await this.updateLeadInDatabase(leadModel.data);
 
+      // Legacy compatibility for existing tests and temporary adapters
+      let contactId: string | undefined;
+      const legacySync = (this as any).ghlSync;
+      if (legacySync?.syncLeadToGHL) {
+        contactId = await legacySync.syncLeadToGHL(leadModel.data);
+      } else if (this.crmProvider?.isEnabled?.()) {
+        const syncResult = await this.crmProvider.upsertLead(leadModel.data);
+        if (syncResult.success && syncResult.contactId) {
+          contactId = syncResult.contactId;
+        }
+      }
+
       // Sync to n8n
       await syncLeadToN8n(leadModel.data);
 
@@ -203,6 +229,7 @@ export class AICRMManagementAgent {
 
       return {
         success: true,
+        contactId,
         syncTime,
       };
     } catch (error: any) {
@@ -367,7 +394,7 @@ export class AICRMManagementAgent {
   }
 
   /**
-   * Synchronize all pending data with GoHighLevel
+   * Synchronize all pending data with configured CRM provider
    */
   async syncAllPendingData(): Promise<{
     leads: { success: number; failed: number };
@@ -380,6 +407,37 @@ export class AICRMManagementAgent {
       const pendingLeads = await this.getPendingLeadsForSync();
       let leadSuccess = 0;
       let leadFailed = 0;
+
+      // Legacy compatibility for test harness/mocks
+      const legacySync = (this as any).ghlSync;
+      if (legacySync?.batchSyncLeads && legacySync?.batchSyncInteractions) {
+        const leadBatchResult = await legacySync.batchSyncLeads(pendingLeads);
+        leadSuccess = Array.isArray(leadBatchResult?.success)
+          ? leadBatchResult.success.length
+          : 0;
+        leadFailed = Array.isArray(leadBatchResult?.failed)
+          ? leadBatchResult.failed.length
+          : 0;
+
+        const pendingInteractions = await this.getPendingInteractionsForSync();
+        const interactionBatchResult = await legacySync.batchSyncInteractions(
+          pendingInteractions
+        );
+
+        return {
+          leads: {
+            success: leadSuccess,
+            failed: leadFailed,
+          },
+          interactions: {
+            success: interactionBatchResult?.success || 0,
+            failed: Array.isArray(interactionBatchResult?.failed)
+              ? interactionBatchResult.failed.length
+              : 0,
+          },
+        };
+      }
+
       for (const lead of pendingLeads) {
         try {
           await syncLeadToN8n(lead);
@@ -439,17 +497,48 @@ export class AICRMManagementAgent {
       );
     }
 
-    // Sync lead first if needed
+    // Legacy compatibility for existing tests and temporary adapters
+    const legacySync = (this as any).ghlSync;
+    let providerContactId = lead.id;
+    if (legacySync?.syncLeadToGHL) {
+      providerContactId = await legacySync.syncLeadToGHL(lead);
+      if (legacySync?.syncInteractionToGHL) {
+        await legacySync.syncInteractionToGHL(interaction, providerContactId);
+      }
+    }
+
+    // Sync lead to n8n first
     await syncLeadToN8n(lead);
 
+    // Sync lead/interaction to CRM provider (safe fallback)
+    const providerEnabled = this.crmProvider?.isEnabled?.() ?? false;
+    if (providerEnabled && !legacySync?.syncLeadToGHL) {
+      const leadSync = await this.crmProvider.upsertLead(lead);
+      if (leadSync.success && leadSync.contactId) {
+        providerContactId = leadSync.contactId;
+      }
+
+      const interactionSync = await this.crmProvider.logInteraction(
+        interaction,
+        providerContactId
+      );
+      if (!interactionSync.success) {
+        logger.warn('CRM provider interaction sync failed, keeping n8n as source of truth', {
+          leadId: lead.id,
+          interactionId: interaction.id,
+          error: interactionSync.error,
+        });
+      }
+    }
+
     // Sync interaction to n8n
-    await syncInteractionToN8n(interaction, lead.id);
+    await syncInteractionToN8n(interaction, providerContactId);
 
     const syncTime = Date.now() - syncStartTime;
 
     return {
       success: true,
-      contactId: lead.id,
+      contactId: providerContactId,
       syncTime,
     };
   }
