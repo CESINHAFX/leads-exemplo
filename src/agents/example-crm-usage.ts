@@ -8,7 +8,7 @@
 
 import { AICRMManagementAgent } from './ai-crm-management-agent';
 import { DatabaseManager } from '../database/manager';
-import { GoHighLevelClient } from '../integrations/gohighlevel/client';
+import { FreeCRMClient } from '../integrations/crm/free-crm-client';
 import { Lead, LeadStatus } from '../types/lead';
 import { Interaction } from '../types/interaction';
 import { logger } from '../utils/logger';
@@ -18,13 +18,15 @@ async function demonstrateCRMAgent() {
   const dbManager = new DatabaseManager();
   await dbManager.initialize();
 
-  const ghlClient = new GoHighLevelClient({
-    apiKey: process.env.GHL_API_KEY || 'your-api-key-here',
-    baseUrl: 'https://rest.gohighlevel.com/v1',
+  const freeCRMClient = new FreeCRMClient({
+    enabled: process.env.FREE_CRM_ENABLED === 'true',
+    provider: (process.env.FREE_CRM_PROVIDER as 'espocrm' | 'suitecrm') || 'espocrm',
+    baseUrl: process.env.FREE_CRM_BASE_URL,
+    apiKey: process.env.FREE_CRM_API_KEY,
   });
 
   // Create CRM Management Agent with configuration
-  const crmAgent = new AICRMManagementAgent(dbManager, ghlClient, {
+  const crmAgent = new AICRMManagementAgent(dbManager, freeCRMClient, {
     syncTimeoutMs: 5000, // 5-second SLA for real-time sync
     duplicateThreshold: 0.8,
   });

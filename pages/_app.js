@@ -1,5 +1,5 @@
 import '../styles/globals.css';
-import initAuth from '@/auth';
+import initAuth from '../utils/firebase/auth/initAuth';
 
 // Inicializa o Firebase
 initAuth();

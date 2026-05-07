@@ -8,12 +8,18 @@ export default function Leads() {
   useEffect(() => {
     async function fetchLeads() {
       try {
-        const response = await fetch('http://localhost:4000/api/leads');
+        const apiBaseUrl =
+          process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000';
+        const response = await fetch(`${apiBaseUrl}/api/leads`);
+
         if (!response.ok) {
           throw new Error('Failed to fetch leads');
         }
+
         const data = await response.json();
-        setLeads(data.leads);
+
+        const normalizedLeads = Array.isArray(data) ? data : data.leads || [];
+        setLeads(normalizedLeads);
         setLoading(false);
       } catch (err) {
         setError(err.message);
@@ -39,6 +45,7 @@ export default function Leads() {
               <th className="py-2 px-4 border-b">Name</th>
               <th className="py-2 px-4 border-b">Email</th>
               <th className="py-2 px-4 border-b">Status</th>
+              <th className="py-2 px-4 border-b">Imagem</th>
               <th className="py-2 px-4 border-b">Actions</th>
             </tr>
           </thead>
@@ -54,6 +61,17 @@ export default function Leads() {
                   </span>
                 </td>
                 <td className="py-2 px-4 border-b">
+                  {lead.image_url ? (
+                    <img
+                      src={lead.image_url}
+                      alt={`Imagem do lead ${lead.name || lead.id}`}
+                      className="h-12 w-12 rounded object-cover"
+                    />
+                  ) : (
+                    <span className="text-sm text-gray-500">Sem imagem</span>
+                  )}
+                </td>
+                <td className="py-2 px-4 border-b">
                   <button className="bg-blue-500 text-white px-3 py-1 rounded mr-2">
                     View
                   </button>
@@ -63,6 +81,13 @@ export default function Leads() {
                 </td>
               </tr>
             ))}
+            {leads.length === 0 && (
+              <tr>
+                <td colSpan={6} className="py-6 px-4 border-b text-center text-gray-500">
+                  Nenhum lead encontrado no banco.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

@@ -2,6 +2,9 @@
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { RateLimiterMemory } from 'rate-limiter-flexible';
+import { Lead } from '../../types/lead';
+import { Interaction } from '../../types/interaction';
+import { CRMProvider, CRMInteractionResult, CRMUpsertResult } from '../crm/provider';
 
 type RateLimiterRes = {
   remainingPoints: number;
@@ -36,7 +39,7 @@ export interface RateLimitStatus {
  * HTTP client for GoHighLevel REST API with built-in
  * rate limiting, retries, and logging.
  */
-export class GoHighLevelClient {
+export class GoHighLevelClient implements CRMProvider {
   private client: AxiosInstance;
   private rateLimitInfo = {
     remainingPoints: 100,
@@ -204,6 +207,56 @@ export class GoHighLevelClient {
     } catch (err) {
       logger.error('GHL health check failed', err as Error);
       return false;
+    }
+  }
+
+  isEnabled(): boolean {
+    return Boolean(this.config.apiKey);
+  }
+
+  async upsertLead(lead: Lead): Promise<CRMUpsertResult> {
+    try {
+      // Endpoint representativo; ajuste conforme payload real da sua conta GHL.
+      const response = await this.post('/contacts/', {
+        name: lead.contactInfo.name,
+        email: lead.contactInfo.email,
+        phone: lead.contactInfo.phone,
+        source: lead.source,
+        customField: {
+          leadId: lead.id,
+          leadType: lead.leadType,
+          status: lead.status,
+        },
+      });
+
+      return {
+        success: true,
+        contactId: response?.data?.contact?.id || lead.id,
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error?.message || 'Failed to upsert lead in GoHighLevel',
+      };
+    }
+  }
+
+  async logInteraction(
+    interaction: Interaction,
+    contactId: string
+  ): Promise<CRMInteractionResult> {
+    try {
+      // Endpoint representativo; ajuste conforme payload real da sua conta GHL.
+      await this.post('/contacts/note', {
+        contactId,
+        body: `[${interaction.type}] ${interaction.content}`,
+      });
+      return { success: true };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error?.message || 'Failed to log interaction in GoHighLevel',
+      };
     }
   }
 

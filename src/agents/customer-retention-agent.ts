@@ -5,6 +5,7 @@ import {
   CreateInteraction,
   InteractionType,
 } from '../types/interaction';
+import { EvolutionApiAdapter } from '../integrations/whatsapp/evolution-api-adapter';
 
 /**
  * Re-engagement trigger configuration
@@ -134,7 +135,7 @@ const DEFAULT_CONFIG: CustomerRetentionConfig = {
   channels: {
     sms: { enabled: true, provider: 'twilio' },
     email: { enabled: true, provider: 'sendgrid' },
-    whatsapp: { enabled: true, provider: 'twilio' },
+    whatsapp: { enabled: true, provider: 'evolution_api' },
   },
   responseAnalysis: {
     positiveKeywords: [
@@ -190,11 +191,13 @@ const DEFAULT_CONFIG: CustomerRetentionConfig = {
  */
 export class CustomerRetentionAgent {
   private config: CustomerRetentionConfig;
+  private whatsappAdapter: EvolutionApiAdapter;
   private activeSessions: Map<string, ReengagementSession> = new Map();
   private engagementAnalyses: Map<string, EngagementAnalysis> = new Map();
 
   constructor(config: Partial<CustomerRetentionConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.whatsappAdapter = new EvolutionApiAdapter();
     this.initializeDefaultConfiguration();
   }
 
@@ -773,11 +776,10 @@ Best,
     phoneNumber: string,
     content: string
   ): Promise<boolean> {
-    // Integration with WhatsApp Business API
     console.log(`Sending WhatsApp to ${phoneNumber}: ${content}`);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    return true;
+
+    const sent = await this.whatsappAdapter.sendMessage(phoneNumber, content);
+    return sent;
   }
 
   /**

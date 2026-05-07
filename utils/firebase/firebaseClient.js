@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getAnalytics } from 'firebase/analytics';
 
 const clientCredentials = {
@@ -12,9 +12,27 @@ const clientCredentials = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
 };
 
-// Initialize Firebase
-const app = initializeApp(clientCredentials);
-const analytics = typeof window !== 'undefined' ? getAnalytics(app) : null;
+const requiredKeys = ['apiKey', 'authDomain', 'projectId', 'appId'];
+const missingKeys = requiredKeys.filter((key) => !clientCredentials[key]);
+
+let app = null;
+let analytics = null;
+
+if (missingKeys.length === 0) {
+  app = getApps().length > 0 ? getApp() : initializeApp(clientCredentials);
+
+  if (typeof window !== 'undefined' && clientCredentials.measurementId) {
+    try {
+      analytics = getAnalytics(app);
+    } catch (error) {
+      console.warn('Firebase Analytics is unavailable in this environment.', error);
+    }
+  }
+} else if (typeof window !== 'undefined') {
+  console.warn(
+    `Firebase client init skipped. Missing config keys: ${missingKeys.join(', ')}`
+  );
+}
 
 export { app, analytics };
 export default app;
